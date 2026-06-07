@@ -182,23 +182,25 @@ if os.path.exists(conf_path):
                 key, value = line.split("=", 1)
                 conf_settings[key.strip()] = value.strip().strip('"')
 
-# Set blocks directory from default or user specified
-# use dir set in Manifest:main:mounts:bitcoind:
-blocks_dir = os.path.expanduser('~/.bitcoin/blocks')
-
 # Build CLI options if specified in conf file
 bitcoin_cli_options = []
 if "bitcoin-rpcuser" in conf_settings and "bitcoin-rpcpassword" in conf_settings:
     bitcoin_cli_options.append(f"-rpcuser={conf_settings['bitcoin-rpcuser']}")
     bitcoin_cli_options.append(f"-rpcpassword={conf_settings['bitcoin-rpcpassword']}")
 else:
-    cookie_path = conf_settings.get("rpccookiefile", os.path.join(data_dir, ".cookie"))
+    cookie_path = conf_settings.get("rpccookiefile", "/mnt/bitcoind/.cookie")
     if os.path.exists(cookie_path):
         bitcoin_cli_options.append(f"-rpccookiefile={cookie_path}")
 
 if "bitcoin-rpcconnect" in conf_settings and "bitcoin-rpcport" in conf_settings:
     bitcoin_cli_options.append(f"-rpcconnect={conf_settings['bitcoin-rpcconnect']}")
     bitcoin_cli_options.append(f"-rpcport={conf_settings['bitcoin-rpcport']}")
+
+# Set blocks directory from config.main or the StartOS Bitcoin Core dependency mount.
+blocks_dir = conf_settings.get("blocksdir", "/mnt/bitcoind/blocks")
+if not os.path.isdir(blocks_dir):
+    print(f"Bitcoin Core blocks directory not found: {blocks_dir}")
+    sys.exit(1)
 
 
 ###############################################################################  
@@ -233,7 +235,7 @@ def Ask_Node(command):
         print("\t3) If needed, set rpcuser/rpcpassword or point to the .cookie file")
         print("\nThe full command was:", " ".join(full_command))
         print("\nThe error from bitcoin-cli was:\n", e)
-        sys.exit()
+        sys.exit(1)
 
 
 
@@ -319,17 +321,17 @@ if date_mode:
                 print("\nDate is after the latest avaiable. We need 6 blocks after UTC midnight.")
                 print("Run UTXOracle.py -rb for the most recent blocks")
                 
-                sys.exit()
+                sys.exit(1)
             
             #make sure this date is after the min date
             dec_15_2023 = datetime(2023,12,15,0,0,0,tzinfo=timezone.utc)
             if datetime_entered.timestamp() < dec_15_2023.timestamp():
                 print("\nThe date entered is before 2023-12-15, please try again")
-                sys.exit()
+                sys.exit(1)
         
         except:
             print("\nError interpreting date. Please try again. Make sure format is YYYY/MM/DD")
-            sys.exit()
+            sys.exit(1)
     
     
     #get the seconds and printable date string of date entered
@@ -524,6 +526,7 @@ from hashlib import sha256
 def sha256d(b): return sha256(sha256(b).digest()).digest()
 
 # Get all .blk files sorted by index
+block_hashes_ordered = list(block_hashes_needed)
 block_hashes_needed = set(block_hashes_needed)
 found_blocks = {}
 blk_files = sorted(
@@ -580,7 +583,8 @@ for blk_file in blk_files:
            
             #add block to the list if a needed block
             if block_hash_hex in block_hashes_needed:
-                found_blocks[block_hash] = {
+                found_blocks[block_hash_hex] = {
+                    "source": "file",
                     "file": blk_file,
                     "offset": start,
                     "block_size": block_size,
@@ -596,15 +600,26 @@ for blk_file in blk_files:
     if len(found_blocks) == len(block_hashes_needed):
         break
 
-# error if all blocks found, if good print progress update
-if len(found_blocks) != len(block_hashes_needed):
-    print("Error: Reached end of blk files without finding all target blocks.")
-    sys.exit()
-else:
-    while print_next<100:
-        print(str(print_next)+"%..",end="",flush=True)
-        print_next +=20
-    print("100% \t\t\t75% done",flush=True)
+# Fall back to RPC for blocks that are not present in the local blk file range.
+missing_block_hashes = [h for h in block_hashes_ordered if h not in found_blocks]
+if missing_block_hashes:
+    print(
+        f"\nFound {len(found_blocks)} of {len(block_hashes_needed)} blocks in raw block files. "
+        f"Fetching {len(missing_block_hashes)} missing blocks from Bitcoin Core RPC.",
+        flush=True,
+    )
+    for block_hash_hex in missing_block_hashes:
+        found_blocks[block_hash_hex] = {
+            "source": "rpc",
+            "hash": block_hash_hex,
+        }
+
+while print_next<100:
+    print(str(print_next)+"%..",end="",flush=True)
+    print_next +=20
+print("100% \t\t\t75% done",flush=True)
+
+found_blocks_ordered = [(h, found_blocks[h]) for h in block_hashes_ordered]
 
 
 
@@ -773,8 +788,22 @@ block_times_dec = []
 print_next = 0
 block_num = 0
 
+def get_block_stream(block_hash_hex, meta):
+    if meta.get("source") == "rpc":
+        raw_block_hex = Ask_Node(['getblock', block_hash_hex, '0']).decode().strip()
+        stream = BytesIO(bytes.fromhex(raw_block_hex))
+        stream.read(80)  # skip block header
+        return stream
+
+    file_path = os.path.join(blocks_dir, meta["file"])
+    stream = open(file_path, "rb")
+    stream.seek(meta["offset"])
+    stream.read(8)   # skip magic + block size
+    stream.read(80)  # skip block header
+    return stream
+
 #loop through all found blocks
-for block_hash, meta in found_blocks.items():
+for block_hash, meta in found_blocks_ordered:
     
     #init variables for next block
     block_num += 1
@@ -786,14 +815,9 @@ for block_hash, meta in found_blocks.items():
         print(str(print_next)+"%..",end="", flush=True)
         print_next +=20
     
-    #get the location of the block on the hard drive
-    file_path = os.path.join(blocks_dir, meta["file"])
-    with open(file_path, "rb") as f:
-        
+    f = get_block_stream(block_hash, meta)
+    try:
         #get tx count in this block
-        f.seek(meta["offset"])
-        f.read(8)   # skip magic + block size
-        f.read(80)  # skip block header
         tx_count = read_varint(f)
 
         #loop through all transactions 
@@ -907,6 +931,8 @@ for block_hash, meta in found_blocks.items():
                     
                     #add the output to this block's output list
                     txs_to_add.append(amount)
+    finally:
+        f.close()
                     
     #add the block's output list to the total output list
     if len(txs_to_add)>0:
@@ -1938,6 +1964,3 @@ print(f"HTML file generated: {filename}")
 #
 # This software is provided “as is,” without warranty of any kind. The Author shall
 # not be liable for any claims, damages, or losses resulting from its use.
-
-
-
