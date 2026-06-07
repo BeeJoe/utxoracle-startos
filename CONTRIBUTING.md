@@ -32,12 +32,12 @@ Three workflows under `.github/workflows/` wrap reusable workflows in [`start9la
 
 - **`build.yml`** — on PR, builds the `.s9pk` and uploads per-arch artifacts for sideload testing.
 - **`release.yml`** — on `v*` tag, builds per arch and publishes to the test registry.
-- **`tagAndRelease.yml`** — on push to `master`, tags `v<version>` and runs `release.yml`, skipping if already in production.
+- **`tagAndRelease.yml`** — on push to `main`, creates a StartOS version tag and runs `release.yml`, skipping if already in production.
 
 Promotion to `beta` and `prod` is a separate, manual step.
 
 ## How to contribute
 
-1. Fork the repository and create a branch from `master`.
+1. Fork the repository and create a branch from `main`.
 2. Make your changes — including the doc updates above.
-3. Open a pull request to `master`.
+3. Open a pull request to `main`.

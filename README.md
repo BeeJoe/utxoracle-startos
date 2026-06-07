@@ -1,81 +1,154 @@
 <p align="center">
-  <img src="icon.png" alt="Project Logo" width="21%">
+  <img src="icon.png" alt="UTXOracle Logo" width="21%">
 </p>
 
-# UTXOracle for StartOS
+# UTXOracle on StartOS
 
-What is UTXOracle?
+> **Upstream docs:** <https://utxo.live/oracle/>
+>
+> Everything not listed in this document should behave the same as upstream
+> UTXOracle. If a feature, setting, or behavior is not mentioned here, the
+> upstream documentation is accurate and fully applicable.
 
-UTXOracle is the decentralized alternative to knowing the price of bitcoin.
+UTXOracle estimates the price of bitcoin by analyzing patterns in local
+on-chain transaction data. This StartOS package runs UTXOracle against the
+Bitcoin Core service on the same server and serves the generated result page
+through a web interface.
 
-Instead of relying on prices given by exchanges, the open-source program [UTXOracle.py](https://utxo.live/oracle/UTXOracle.py) determines the price by analyzing patterns of on-chain transactions.
+## Image and Container Runtime
 
-The program connects to a local bitcoin node and no other outside sources. Everyone who independently runs this code will get the same price estimate.
+This package builds a custom Python container from the local `Dockerfile`.
+The image includes `utxoracle.py`, `generate-html.py`, `bitcoin-cli`, the
+StartOS entrypoint, and health-check helper scripts.
 
-## StartOS package behavior
+The entrypoint writes a temporary status page, starts the web server
+immediately, waits for Bitcoin Core RPC readiness, runs UTXOracle, and then
+serves the generated `index.html` result page. If UTXOracle exits with an
+error, the entrypoint keeps the web server running and replaces the status page
+with a failure page.
 
-This package runs `utxoracle.py` in a Python container and serves the generated `index.html` on port 80. It starts the web server with a temporary status page while UTXOracle runs, then serves the generated result page when analysis completes. It installs `bitcoin-cli` from Bitcoin Core 31.0 binaries and connects only to the local Bitcoin Core service on the same StartOS server.
+Supported architectures are declared in `startos/manifest/index.ts`.
 
-UTXOracle depends on the StartOS `bitcoind` package. The dependency is declared in `startos/manifest/index.ts` and currently requires Bitcoin Core `>=31.0:0 <32.0.0:0` with the `sync-progress` health check passing. At runtime, the Bitcoin Core `main` volume is mounted read-only at `/mnt/bitcoind`; UTXOracle authenticates to RPC with `/mnt/bitcoind/.cookie`, reads raw block files from `/mnt/bitcoind/blocks`, and connects to `bitcoind.startos:8332`. If a target block is not found in the mounted raw block files, UTXOracle fetches that serialized block from the local Bitcoin Core RPC interface.
+## Volume and Data Layout
 
-The service stores StartOS-managed package state in the `main` volume mounted at `/root`. The generated `config.main` contains only local runtime settings: RPC host, RPC port, cookie path, block file path, alias, and the optional UTXOracle argument. RPC usernames and passwords are not stored in this package.
+This package owns one StartOS volume:
 
-## Build requirements
+| Volume | Container Mount | Purpose |
+| --- | --- | --- |
+| `main` | `/root` | Stores `config.main` and service-local runtime state. |
 
-Follow the [StartOS packaging environment setup](https://docs.start9.com/packaging/0.4.0.x/environment-setup.html). This package uses the StartOS 0.4 SDK TypeScript layout:
+The Bitcoin Core dependency volume is mounted read-only at `/mnt/bitcoind`.
+UTXOracle reads the Bitcoin Core RPC cookie and raw block files from that
+mount. If a target block is not found in the mounted raw block files, UTXOracle
+fetches the serialized block from the local Bitcoin Core RPC interface.
 
-- `@start9labs/start-sdk` in `package.json`
-- package metadata in `startos/manifest/index.ts`
-- version metadata in `startos/versions/current.ts`
-- lifecycle exports in `startos/index.ts`
-- shared build logic in `s9pk.mk`
+## Installation and First-Run Flow
 
-## Cloning
+Install Bitcoin Core on the same StartOS server before starting UTXOracle.
+On install or update, the package normalizes `config.main` with StartOS-managed
+RPC and block-file settings. No RPC username or password is generated or stored
+by this package.
 
-Clone the project locally:
+When the service starts, the web interface becomes available first with a
+temporary status page. The final UTXOracle result page appears after block
+analysis completes.
 
+## Configuration Management
+
+StartOS manages the runtime config file at `/root/config.main`.
+
+| StartOS-Managed Setting | Purpose |
+| --- | --- |
+| `network` | Locks the package to bitcoin mode. |
+| `rpccookiefile` | Points to the mounted Bitcoin Core RPC cookie. |
+| `bitcoin-rpcconnect` | Points to the local StartOS Bitcoin Core service. |
+| `bitcoin-rpcport` | Points to the Bitcoin Core RPC port. |
+| `blocksdir` | Points to the mounted Bitcoin Core raw block directory. |
+| `bind-addr` | Preserves the historical package setting. |
+| `alias` | Preserves the historical package setting. |
+| `argument` | Stores the optional UTXOracle mode/date argument. |
+
+Users should change only the UTXOracle argument through the Configure action.
+
+## Network Access and Interfaces
+
+| Interface | Protocol | Purpose |
+| --- | --- | --- |
+| Web Interface | HTTP | Serves the temporary status page and generated UTXOracle result page. |
+
+The interface port is declared in `startos/interfaces.ts`.
+
+## Actions
+
+| Action | Availability | Purpose |
+| --- | --- | --- |
+| Configure | Any status | Sets the optional UTXOracle runtime argument. |
+
+The Configure action accepts blank input for recent block mode, `rb` for recent
+block mode, `y` for yesterday, or a UTC date in the format shown in the action
+placeholder.
+
+## Backups and Restore
+
+Backups include the `main` volume. Restore uses the standard StartOS SDK backup
+flow for that volume. The Bitcoin Core dependency volume is not backed up by
+this package.
+
+## Health Checks
+
+| Health Check | Purpose |
+| --- | --- |
+| Web Interface | Confirms the HTTP server is listening. |
+| UTXOracle Completion | Reports loading while UTXOracle is still running, success after a clean run, and failure after a nonzero exit. |
+
+## Dependencies
+
+Bitcoin Core is required. The dependency version range and required health
+checks are declared in `startos/dependencies.ts`.
+
+UTXOracle uses Bitcoin Core for local RPC calls, RPC cookie authentication, and
+access to raw block data. The Bitcoin Core dependency volume is mounted
+read-only.
+
+## Limitations and Differences
+
+1. UTXOracle connects only to the Bitcoin Core service on the same StartOS
+   server.
+2. The web interface is a static HTTP server that serves the generated
+   UTXOracle result page.
+3. UTXOracle does not store Bitcoin Core RPC usernames or passwords.
+4. The result page updates when the service is run again; this package does not
+   provide a live streaming price feed.
+
+## What Is Unchanged from Upstream
+
+The UTXOracle price calculation logic remains the upstream script logic. This
+package changes only StartOS packaging, dependency wiring, runtime paths, and
+service lifecycle behavior.
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Quick Reference for AI Consumers
+
+```yaml
+package_id: utxoracle
+architectures:
+  - x86_64
+  - aarch64
+volumes:
+  main: /root
+dependency_mounts:
+  bitcoind_main: /mnt/bitcoind
+ports:
+  web: http
+dependencies:
+  - bitcoind
+startos_managed_env_vars: []
+actions:
+  - configure
+health_checks:
+  - primary
+  - complete
 ```
-git clone https://github.com/citizenanalog/utxoracle-startos.git
-cd utxoracle-startos
-```
-
-## Building
-
-Install npm dependencies and build the package:
-
-```
-npm ci
-make
-```
-
-To build a single architecture:
-
-```
-make x86
-make arm
-```
-
-## Installing (on StartOS)
-
-Run the following commands to determine successful install:
-> :information_source: Change server-name.local to your Start9 server address
-
-```
-start-cli auth login
-# Enter your StartOS password
-start-cli --host https://server-name.local package install utxoracle.s9pk
-```
-
-If you already have your `start-cli` config file setup with a default `host`, you can install simply by running:
-
-```
-make install
-```
-
-> **Tip:** You can also install the utxoracle.s9pk using **Sideload Service** under the **System > Manage** section.
-
-### Verify Install
-
-Go to your StartOS Services page, select **UTXOracle**, configure and start the service. Then, verify its interfaces are accessible.
-
-**Done!** 
