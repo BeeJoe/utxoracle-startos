@@ -77,7 +77,7 @@ def main():
             print("\t3) If needed, set rpcuser/rpcpassword or point to the .cookie file")
             print("\nThe full command was:", " ".join(full_command))
             print("\nThe error from bitcoin-cli was:\n", e)
-            sys.exit()
+            sys.exit(1)
 
 
     # Set data_dir and expand ~ to the home directory
@@ -108,10 +108,10 @@ def main():
     if "bitcoin-rpcuser" in conf_settings and "bitcoin-rpcpassword" in conf_settings:
         bitcoin_cli_options.append(f"-rpcuser={conf_settings['bitcoin-rpcuser']}")
         bitcoin_cli_options.append(f"-rpcpassword={conf_settings['bitcoin-rpcpassword']}")
-    # else:
-    #     cookie_path = conf_settings.get("bitcoin-rpccookiefile", os.path.join(data_dir, ".cookie"))
-    #     if os.path.exists(cookie_path):
-    #         bitcoin_cli_options.append(f"-rpccookiefile={cookie_path}")
+    else:
+        cookie_path = conf_settings.get("rpccookiefile", "/mnt/bitcoind/.cookie")
+        if os.path.exists(cookie_path):
+            bitcoin_cli_options.append(f"-rpccookiefile={cookie_path}")
     if "bitcoin-rpcconnect" in conf_settings and "bitcoin-rpcport" in conf_settings:
         bitcoin_cli_options.append(f"-rpcconnect={conf_settings['bitcoin-rpcconnect']}")
         bitcoin_cli_options.append(f"-rpcport={conf_settings['bitcoin-rpcport']}")
